@@ -131,6 +131,7 @@ dmypy.json
 # Downloaded data and trained models are never committed
 data/*
 !data/README.md
+!data/airline-passengers.csv
 *.keras
 *.h5
 
