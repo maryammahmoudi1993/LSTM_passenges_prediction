@@ -19,8 +19,14 @@ DATA = Path(__file__).resolve().parents[1] / "data" / "airline-passengers.csv"
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 
 warnings.filterwarnings("ignore", category=FutureWarning)
-for name in ("cmdstanpy", "prophet", "prophet.plot"):
-    logging.getLogger(name).setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message="IProgress not found")
+
+
+def quiet_prophet_logs():
+    """Prophet and its Stan back end print two lines for every fit; keep only real problems (call after importing prophet)."""
+    import cmdstanpy
+    cmdstanpy.disable_logging()
+    logging.getLogger("prophet").setLevel(logging.ERROR)
 
 
 def save_figure(fig, name):
@@ -107,7 +113,9 @@ def holt_winters(trend="add", seasonal="mul", damped=False):
 
 def prophet(seasonality_mode="multiplicative"):
     """Prophet (Taylor and Letham, 2018): a trend plus a yearly seasonal pattern, fitted by optimisation."""
+    logging.getLogger("prophet.plot").setLevel(logging.CRITICAL)           # hides a harmless "plotly" notice
     from prophet import Prophet
+    quiet_prophet_logs()
 
     def forecaster(history, horizon):
         frame = pd.DataFrame({"ds": history.index, "y": history.to_numpy()})
