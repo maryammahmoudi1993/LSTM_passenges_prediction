@@ -199,7 +199,7 @@ def plot_representations(series):
     fig, axes = plt.subplots(1, 2, figsize=(10, 3.2))
     axes[0].plot(series.index, logged.values, color="tab:blue"); axes[0].set_title("levels: log of passengers (rises, with a yearly pattern)", fontsize=9)
     axes[1].plot(change.index, change.values, color="tab:green"); axes[1].axhline(0, color="gray", lw=.8)
-    axes[1].set_title("year-over-year change of the log (no trend, no yearly pattern)", fontsize=9)
+    axes[1].set_title("year-over-year change of the log (no yearly pattern, no steady trend)", fontsize=9)
     for ax in axes:
         ax.grid(alpha=.3)
     return fig
@@ -227,8 +227,8 @@ def plot_conclusion(rows):
                   for n in names]
         ax.barh(positions, values, color=colors, alpha=.85)
         ax.hlines(positions, [r[k + 1] for r in rows], [r[k + 2] for r in rows], color="black", lw=1.5)
-        for y, v in zip(positions, values):
-            ax.text(v + max(values) * 0.01, y, f"{v:.1f}", va="center", fontsize=8)
+        for y, v, high in zip(positions, values, [r[k + 2] for r in rows]):
+            ax.text(max(v, high) + max(values) * 0.012, y, f"{v:.1f}", va="center", fontsize=8)
         ax.set_title(title + "  (test MAE, thousands; lower is better)", fontsize=9); ax.grid(axis="x", alpha=.3)
     axes[0].set_yticks(positions); axes[0].set_yticklabels(names)
     return fig

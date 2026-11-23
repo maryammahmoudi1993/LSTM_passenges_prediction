@@ -17,6 +17,8 @@ import tensorflow as tf
 
 from . import forecasting as fc
 
+tf.get_logger().setLevel("ERROR")        # hide the "retracing" notices that Keras prints when we predict with many small models
+
 WINDOW = 12                         # one year of history is the input of every neural model
 
 
