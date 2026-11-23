@@ -49,3 +49,28 @@ def test_classical_models_forecast_a_seasonal_series():
         forecast = forecaster(series, 12)
         assert forecast.shape == (12,) and np.isfinite(forecast).all()
         assert fc.mape(series.iloc[-12:], forecast) < 60          # sane order of magnitude (not a quality claim)
+
+
+def test_neural_windows_never_contain_the_target_or_the_future():
+    from src import neural as nn
+    series = fc.load_series()
+    scaler = nn.Scaler(series.iloc[:96])
+    scaled = scaler.transform(series.to_numpy())
+    x, y = nn.make_windows(scaled, [96, 100])
+    assert x.shape == (2, nn.WINDOW, 1) and y.shape == (2,)
+    assert np.allclose(x[0, :, 0], scaled[84:96]) and np.isclose(y[0], scaled[96])      # window ends right before its target
+    assert np.allclose(scaler.inverse(scaled), series.to_numpy())
+
+
+def test_neural_models_train_and_forecast_on_a_short_run():
+    from src import neural as nn
+    series = fc.load_series()
+    model, best_epoch, scaler = nn.train("lstm", {"units": 4}, series, 96, 120, seed=1, max_epochs=3, patience=3)
+    assert 1 <= best_epoch <= 3
+    one = nn.one_step(model, scaler, series, 120, 5)
+    many = nn.recursive(model, scaler, series, 120, 5)
+    assert len(one) == 5 and len(many) == 5 and np.isfinite(one).all() and np.isfinite(many).all()
+    transformer, attention, scaler = nn.train_final("transformer", {"blocks": 1}, series, 120, seed=1, epochs=2)
+    weights = nn.attention_by_position(attention, scaler, series, 120, 5)
+    assert weights.shape == (nn.WINDOW,) and abs(weights.sum() - 1.0) < 1e-4
+    assert np.isfinite(nn.one_step(transformer, scaler, series, 120, 3)).all()
