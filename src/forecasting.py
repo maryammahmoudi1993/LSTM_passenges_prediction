@@ -190,3 +190,45 @@ def plot_bars(names, values, xlabel):
         ax.text(v + max(values) * 0.01, y, f"{v:.1f}", va="center", fontsize=9)
     ax.set_yticks(positions); ax.set_yticklabels(names); ax.set_xlabel(xlabel); ax.grid(axis="x", alpha=.3)
     return fig
+
+
+def plot_representations(series):
+    """The same series as the network sees it: the standardised log (levels) and the year-over-year change of the log."""
+    logged = np.log(series)
+    change = (logged - logged.shift(SEASON)).dropna()
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.2))
+    axes[0].plot(series.index, logged.values, color="tab:blue"); axes[0].set_title("levels: log of passengers (rises, with a yearly pattern)", fontsize=9)
+    axes[1].plot(change.index, change.values, color="tab:green"); axes[1].axhline(0, color="gray", lw=.8)
+    axes[1].set_title("year-over-year change of the log (no trend, no yearly pattern)", fontsize=9)
+    for ax in axes:
+        ax.grid(alpha=.3)
+    return fig
+
+
+def plot_attention(weights):
+    """Average attention of the last month of a window on each of the twelve months before the forecast."""
+    fig, ax = plt.subplots(figsize=(7, 3))
+    labels = [f"t-{k}" for k in range(len(weights), 0, -1)]
+    ax.bar(labels, weights, color="tab:purple")
+    ax.set_ylabel("attention weight"); ax.set_xlabel("month of the window (t = the month to predict)")
+    ax.set_title("where the Transformer looks (average over test windows and heads)", fontsize=9)
+    return fig
+
+
+def plot_conclusion(rows):
+    """Test MAE of every model for both tasks. ``rows``: list of (name, mae_A, low_A, high_A, mae_B, low_B, high_B); the
+    thin line spans the smallest to the largest value over seeds (equal to the bar for models without seeds)."""
+    names = [r[0] for r in rows]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 0.45 * len(rows) + 1.6), sharey=True)
+    positions = np.arange(len(rows))[::-1]
+    for ax, (k, title) in zip(axes, [(1, "task A: one month ahead"), (4, "task B: 24 months ahead")]):
+        values = [r[k] for r in rows]
+        colors = ["tab:gray" if "naive" in n else ("tab:blue" if not (n.startswith("LSTM") or n.startswith("Transformer")) else "tab:orange")
+                  for n in names]
+        ax.barh(positions, values, color=colors, alpha=.85)
+        ax.hlines(positions, [r[k + 1] for r in rows], [r[k + 2] for r in rows], color="black", lw=1.5)
+        for y, v in zip(positions, values):
+            ax.text(v + max(values) * 0.01, y, f"{v:.1f}", va="center", fontsize=8)
+        ax.set_title(title + "  (test MAE, thousands; lower is better)", fontsize=9); ax.grid(axis="x", alpha=.3)
+    axes[0].set_yticks(positions); axes[0].set_yticklabels(names)
+    return fig
