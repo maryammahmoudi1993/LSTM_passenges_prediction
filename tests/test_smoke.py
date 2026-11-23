@@ -54,23 +54,40 @@ def test_classical_models_forecast_a_seasonal_series():
 def test_neural_windows_never_contain_the_target_or_the_future():
     from src import neural as nn
     series = fc.load_series()
-    scaler = nn.Scaler(series.iloc[:96])
-    scaled = scaler.transform(series.to_numpy())
-    x, y = nn.make_windows(scaled, [96, 100])
+    values = series.to_numpy()
+    level = nn.Representation("level", series.iloc[:96])
+    scaled = level.features(values)
+    x, y = level.windows(values, [96, 100])
     assert x.shape == (2, nn.WINDOW, 1) and y.shape == (2,)
     assert np.allclose(x[0, :, 0], scaled[84:96]) and np.isclose(y[0], scaled[96])      # window ends right before its target
-    assert np.allclose(scaler.inverse(scaled), series.to_numpy())
+    assert np.isclose(level.decode(scaled[100], values, 100), values[100])
+    yoy = nn.Representation("yoy", series.iloc[:96])
+    xy, yy = yoy.windows(values, [96])
+    assert np.isfinite(xy).all() and np.isfinite(yy).all() and yoy.first == 24
+    assert np.isclose(yoy.decode(yoy.features(values)[100], values, 100), values[100])  # decoding the true change gives the true value
+
+
+def test_changing_the_future_does_not_change_a_forecast():
+    from src import neural as nn
+    series = fc.load_series()
+    model, _, rep = nn.train("lstm", {"units": 4, "rep": "yoy"}, series, 96, 120, seed=1, max_epochs=2, patience=2)
+    changed = series.copy()
+    changed.iloc[120:] = changed.iloc[120:] * 3                       # a different future
+    first = nn.recursive(model, rep, series, 120, 4).to_numpy()
+    second = nn.recursive(model, rep, changed, 120, 4).to_numpy()
+    assert np.allclose(first, second)                                  # the forecast only depends on what is before month 120
 
 
 def test_neural_models_train_and_forecast_on_a_short_run():
     from src import neural as nn
     series = fc.load_series()
-    model, best_epoch, scaler = nn.train("lstm", {"units": 4}, series, 96, 120, seed=1, max_epochs=3, patience=3)
-    assert 1 <= best_epoch <= 3
-    one = nn.one_step(model, scaler, series, 120, 5)
-    many = nn.recursive(model, scaler, series, 120, 5)
-    assert len(one) == 5 and len(many) == 5 and np.isfinite(one).all() and np.isfinite(many).all()
-    transformer, attention, scaler = nn.train_final("transformer", {"blocks": 1}, series, 120, seed=1, epochs=2)
-    weights = nn.attention_by_position(attention, scaler, series, 120, 5)
+    for rep_name in ("level", "yoy"):
+        model, best_epoch, rep = nn.train("lstm", {"units": 4, "rep": rep_name}, series, 96, 120, seed=1, max_epochs=3, patience=3)
+        assert 1 <= best_epoch <= 3
+        one = nn.one_step(model, rep, series, 120, 5)
+        many = nn.recursive(model, rep, series, 120, 5)
+        assert len(one) == 5 and len(many) == 5 and np.isfinite(one).all() and np.isfinite(many).all()
+    transformer, attention, rep = nn.train_final("transformer", {"blocks": 1, "rep": "level"}, series, 120, seed=1, epochs=2)
+    weights = nn.attention_by_position(attention, rep, series, 120, 5)
     assert weights.shape == (nn.WINDOW,) and abs(weights.sum() - 1.0) < 1e-4
-    assert np.isfinite(nn.one_step(transformer, scaler, series, 120, 3)).all()
+    assert np.isfinite(nn.one_step(transformer, rep, series, 120, 3)).all()

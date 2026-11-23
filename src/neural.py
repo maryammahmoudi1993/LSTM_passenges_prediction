@@ -27,25 +27,43 @@ def set_seed(seed=fc.SEED):
 
 
 # ---------------------------------------------------------------- data preparation
-class Scaler:
-    """Logarithm, then subtract the mean and divide by the standard deviation of the *training* months only."""
+class Representation:
+    """How the series is shown to the network. Statistics come from the *training* months only.
 
-    def __init__(self, train_values):
+    "level":  the standardised logarithm of the series; the label is the value of the month to predict.
+    "yoy":    the year-over-year change of the logarithm, log(y_t) - log(y_(t-12)), standardised; the label is the change of the month to
+              predict, and the forecast is the value of the same month last year times that change. This removes trend and yearly pattern
+              before the network sees the data.
+    """
+
+    def __init__(self, kind, train_values):
+        self.kind = kind
         logged = np.log(np.asarray(train_values, dtype="float64"))
-        self.mean, self.std = float(logged.mean()), float(logged.std())
+        values = logged if kind == "level" else logged[12:] - logged[:-12]
+        self.mean, self.std = float(values.mean()), float(values.std())
+        self.first = WINDOW if kind == "level" else 2 * WINDOW        # first month that has a full window of features
 
-    def transform(self, values):
-        return (np.log(np.asarray(values, dtype="float64")) - self.mean) / self.std
+    def features(self, values):
+        """Scaled feature for every position (NaN where it is not defined yet)."""
+        logged = np.log(np.asarray(values, dtype="float64"))
+        if self.kind == "level":
+            return (logged - self.mean) / self.std
+        scaled = np.full_like(logged, np.nan)
+        scaled[12:] = (logged[12:] - logged[:-12] - self.mean) / self.std
+        return scaled
 
-    def inverse(self, values):
-        return np.exp(np.asarray(values, dtype="float64") * self.std + self.mean)
+    def windows(self, values, targets):
+        """For every target position t: the input is the features at t-12 ... t-1 (strictly before t), the label is the feature at t."""
+        scaled = self.features(values)
+        x = np.stack([scaled[t - WINDOW:t] for t in targets])[..., None].astype("float32")
+        y = np.array([scaled[t] for t in targets], dtype="float32")
+        return x, y
 
-
-def make_windows(scaled, targets, window=WINDOW):
-    """For every target position t: the input is scaled[t-window:t] (strictly before t) and the label is scaled[t]."""
-    x = np.stack([scaled[t - window:t] for t in targets])[..., None].astype("float32")
-    y = np.array([scaled[t] for t in targets], dtype="float32")
-    return x, y
+    def decode(self, prediction, values, t):
+        """Turn a network output for month t into passengers, using only ``values`` before t."""
+        if self.kind == "level":
+            return float(np.exp(prediction * self.std + self.mean))
+        return float(np.exp(np.log(values[t - 12]) + prediction * self.std + self.mean))
 
 
 # ---------------------------------------------------------------- models
@@ -83,65 +101,61 @@ def build(kind, config, window=WINDOW):
 
 
 # ---------------------------------------------------------------- training
-def train(kind, config, series, train_end, val_end, seed, max_epochs=300, patience=30):
+def train(kind, config, series, train_end, val_end, seed, max_epochs=200, patience=20):
     """Train on the windows whose targets lie before ``train_end``; stop when the loss on the windows whose targets
     lie in [train_end, val_end) has not improved for ``patience`` epochs and keep the best weights.
 
-    Returns (model, best_epoch, scaler). The scaler is fitted on the training months only.
+    ``config`` holds the model size and the representation ("level" or "yoy"). Returns (model, best_epoch, representation).
     """
     set_seed(seed)
-    scaler = Scaler(series.iloc[:train_end])
-    scaled = scaler.transform(series.to_numpy())
-    x_train, y_train = make_windows(scaled, range(WINDOW, train_end))
-    x_val, y_val = make_windows(scaled, range(train_end, val_end))
+    rep = Representation(config["rep"], series.iloc[:train_end])
+    values = series.to_numpy()
+    x_train, y_train = rep.windows(values, range(rep.first, train_end))
+    x_val, y_val = rep.windows(values, range(train_end, val_end))
     model, _ = build(kind, config)
     model.compile(optimizer=keras.optimizers.Adam(1e-3), loss="mse")
     stop = keras.callbacks.EarlyStopping(monitor="val_loss", patience=patience, restore_best_weights=True)
     history = model.fit(x_train, y_train, validation_data=(x_val, y_val), epochs=max_epochs, batch_size=16,
                         callbacks=[stop], verbose=0)
-    best_epoch = int(np.argmin(history.history["val_loss"])) + 1
-    return model, best_epoch, scaler
+    return model, int(np.argmin(history.history["val_loss"])) + 1, rep
 
 
 def train_final(kind, config, series, upto, seed, epochs):
     """Train on all windows whose targets lie before ``upto`` for a fixed number of epochs (no validation data left).
 
-    Returns (model, attention_model, scaler).
+    Returns (model, attention_model, representation).
     """
     set_seed(seed)
-    scaler = Scaler(series.iloc[:upto])
-    scaled = scaler.transform(series.to_numpy())
-    x_train, y_train = make_windows(scaled, range(WINDOW, upto))
+    rep = Representation(config["rep"], series.iloc[:upto])
+    x_train, y_train = rep.windows(series.to_numpy(), range(rep.first, upto))
     model, attention = build(kind, config)
     model.compile(optimizer=keras.optimizers.Adam(1e-3), loss="mse")
     model.fit(x_train, y_train, epochs=epochs, batch_size=16, verbose=0)
-    return model, attention, scaler
+    return model, attention, rep
 
 
 # ---------------------------------------------------------------- forecasting with a trained model
-def one_step(model, scaler, series, start, n):
+def one_step(model, rep, series, start, n):
     """Task A: for each of the ``n`` months from position ``start``, predict it from the true twelve months before it."""
-    scaled = scaler.transform(series.to_numpy())
-    x, _ = make_windows(scaled, range(start, start + n))
-    predicted = scaler.inverse(model.predict(x, verbose=0)[:, 0])
+    values = series.to_numpy()
+    x, _ = rep.windows(values, range(start, start + n))
+    output = model.predict(x, verbose=0)[:, 0]
+    predicted = [rep.decode(o, values, t) for o, t in zip(output, range(start, start + n))]
     return pd.Series(predicted, index=series.index[start:start + n])
 
 
-def recursive(model, scaler, series, start, n):
-    """Task B: from the twelve months before ``start``, predict ``n`` months by feeding each prediction back as the next input."""
-    scaled = list(scaler.transform(series.to_numpy()[:start]))
-    out = []
-    for _ in range(n):
-        window = np.array(scaled[-WINDOW:], dtype="float32")[None, :, None]
-        step = float(model.predict(window, verbose=0)[0, 0])
-        scaled.append(step)
-        out.append(step)
-    return pd.Series(scaler.inverse(out), index=series.index[start:start + n])
+def recursive(model, rep, series, start, n):
+    """Task B: predict ``n`` months from what is known before ``start``, feeding each prediction back as if it had been observed."""
+    values = list(series.to_numpy()[:start])
+    for t in range(start, start + n):
+        scaled = rep.features(np.array(values))
+        window = np.array(scaled[t - WINDOW:t], dtype="float32")[None, :, None]
+        values.append(rep.decode(float(model.predict(window, verbose=0)[0, 0]), values, t))
+    return pd.Series(values[start:], index=series.index[start:start + n])
 
 
-def attention_by_position(attention_model, scaler, series, start, n):
+def attention_by_position(attention_model, rep, series, start, n):
     """Average attention (over test windows and heads) that the *last* month of the window pays to each of the 12 months."""
-    scaled = scaler.transform(series.to_numpy())
-    x, _ = make_windows(scaled, range(start, start + n))
+    x, _ = rep.windows(series.to_numpy(), range(start, start + n))
     weights = attention_model.predict(x, verbose=0)          # (windows, heads, query, key)
     return weights[:, :, -1, :].mean(axis=(0, 1))
